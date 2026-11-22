@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "tyzie.better-battery",
+  "name": "Better Battery",
+  "version": "0.3.3",
+  "author": "tyzie",
+  "license": "MIT",
+  "description": "Battery bar widget with detailed stats, charging history, sleep tracking, and power profiles.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Better Battery",
+    "description": "Battery icon with optional percentage and detailed battery panel.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showPercentage": false,
+      "pollIntervalSec": 5
+    },
+    "schema": [
+      {
+        "key": "showPercentage",
+        "type": "boolean",
+        "label": "Show percentage",
+        "defaultValue": false
+      },
+      {
+        "key": "pollIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while panel is open (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}

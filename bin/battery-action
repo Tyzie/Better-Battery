@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=../lib/common.sh
+source "$DIR/lib/common.sh"
+
+cmd="${1:-}"
+arg="${2:-}"
+
+apply_profile_target() {
+  local gov boost
+  profile_helper_installed || return 2
+  read -r gov boost <<<"$(profile_targets "$1")"
+  if sudo -n "$PROFILE_HELPER" "$gov" "$boost" >/dev/null 2>&1; then return 0; fi
+  if have pkexec && pkexec "$PROFILE_HELPER" "$gov" "$boost" >/dev/null 2>&1; then return 0; fi
+  return 1
+}
+
+apply_profile() {
+  local mode="$arg" ac effective
+  case "$mode" in
+    auto) touch "$AUTO_MODE_FILE" ;;
+    econom|normal|power)
+      rm -f "$AUTO_MODE_FILE"
+      printf '%s' "$mode" > "$PROFILE_MODE_FILE"
+      ;;
+    *) return 1 ;;
+  esac
+  ac=$(ac_online)
+  effective=$(profile_effective "$mode" "$ac")
+  apply_profile_target "$effective" || true
+}
+
+install_sleep_hook() {
+  local src="$DIR/bin/battery-sleep-hook"
+  local dst="/usr/lib/systemd/system-sleep/tyzie-battery-sleep"
+  local tmp
+  tmp=$(mktemp)
+  cat >"$tmp" <<SH
+#!/usr/bin/env bash
+exec "$DIR/bin/battery-sleep-hook" "\$@"
+SH
+  chmod +x "$tmp"
+  if have pkexec; then
+    pkexec bash -c "install -Dm755 '$tmp' '$dst'"
+  elif sudo -n true 2>/dev/null; then
+    sudo install -Dm755 "$tmp" "$dst"
+  else
+    omarchy-launch-floating-terminal-with-presentation bash -lc "sudo install -Dm755 '$tmp' '$dst'; echo; echo Installed sleep hook. Press Enter to close.; read"
+  fi
+  rm -f "$tmp"
+}
+
+install_profile_helper() {
+  local tmpdir helper sudoers installer
+  tmpdir=$(mktemp -d)
+  helper="$tmpdir/helper"
+  sudoers="$tmpdir/sudoers"
+  installer="$tmpdir/install.sh"
+  cp "$DIR/bin/battery-profile-helper" "$helper"
+  cat >"$sudoers" <<EOF
+# tyzie.battery custom CPU profile helper
+$USER_NAME ALL=(root) NOPASSWD: $PROFILE_HELPER powersave 0, $PROFILE_HELPER powersave 1, $PROFILE_HELPER performance 0, $PROFILE_HELPER performance 1
+EOF
+  cat >"$installer" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+install -Dm750 -o root -g root "$1" /usr/local/libexec/tyzie-battery-profile
+install -Dm440 -o root -g root "$2" /etc/sudoers.d/.tyzie-battery-profile.tmp
+if visudo -c -f /etc/sudoers.d/.tyzie-battery-profile.tmp >/dev/null 2>&1; then
+  mv -f /etc/sudoers.d/.tyzie-battery-profile.tmp /etc/sudoers.d/tyzie-battery-profile
+  chmod 440 /etc/sudoers.d/tyzie-battery-profile
+else
+  rm -f /etc/sudoers.d/.tyzie-battery-profile.tmp
+  echo "sudoers validation failed" >&2
+  exit 1
+fi
+SH
+  chmod +x "$installer"
+  if [ "$(id -u)" = "0" ]; then
+    bash "$installer" "$helper" "$sudoers"
+  elif have pkexec; then
+    pkexec bash "$installer" "$helper" "$sudoers"
+  else
+    omarchy-launch-floating-terminal-with-presentation bash -lc "sudo bash '$installer' '$helper' '$sudoers'; echo; echo Press Enter to close.; read"
+  fi
+  touch "$PROFILE_HELPER_MARKER"
+  rm -rf "$tmpdir"
+}
+
+case "$cmd" in
+  profile) apply_profile ;;
+  install-sleep-hook) install_sleep_hook ;;
+  install-profile-helper) install_profile_helper ;;
+  clear-sleep)
+    rm -f "$SLEEP_LOG" "$PENDING_SLEEP"
+    ;;
+  clear-charge)
+    rm -f "$CHARGE_LOG" "$PENDING_CHARGE" "$CHARGE_STATE"
+    ;;
+  auto-sync)
+    [ -f "$AUTO_MODE_FILE" ] || exit 0
+    ac=$(ac_online)
+    effective=$(profile_effective auto "$ac")
+    apply_profile_target "$effective" || true
+    ;;
+  *) ;;
+esac
+
+exec "$DIR/bin/battery-data"

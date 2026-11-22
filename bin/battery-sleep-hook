@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=../lib/common.sh
+source "$DIR/lib/common.sh"
+
+phase="${1:-}"  # pre|post
+what="${2:-sleep}"
+
+stayed_on_ac() {
+  local before="$1" after="$2"
+  [ "$before" = "1" ] && [ "$after" = "1" ]
+}
+
+bat=$(battery_path || true)
+[ -n "$bat" ] || exit 0
+
+cap=$(read_sys "$bat/capacity" 0)
+en=$(energy_uwh "$bat" energy_now charge_now)
+status=$(read_sys "$bat/status" Unknown)
+ac=$(ac_online)
+now=$(date +%s)
+iso=$(date -Iseconds)
+
+case "$phase" in
+  pre)
+    jq -cn --argjson ts "$now" --arg iso "$iso" --argjson cap "$cap" --argjson energy "$en" --arg status "$status" --argjson ac "$ac" --arg what "$what" \
+      '{ts:$ts,iso:$iso,cap:$cap,energy:$energy,status:$status,ac:$ac,what:$what}' > "$PENDING_SLEEP"
+    ;;
+  post)
+    [ -r "$PENDING_SLEEP" ] || exit 0
+    pre=$(cat "$PENDING_SLEEP")
+    pre_ts=$(jq -r '.ts // 0' <<<"$pre")
+    pre_cap=$(jq -r '.cap // 0' <<<"$pre")
+    pre_en=$(jq -r '.energy // 0' <<<"$pre")
+    pre_ac=$(jq -r '.ac // 0' <<<"$pre")
+    if stayed_on_ac "$pre_ac" "$ac"; then
+      rm -f "$PENDING_SLEEP"
+      exit 0
+    fi
+    dur=$((now - pre_ts))
+    [ "$dur" -lt 30 ] && exit 0
+    drop_cap=$(awk -v a="$pre_cap" -v b="$cap" 'BEGIN{d=a-b; if(d<0)d=0; printf "%.2f", d}')
+    drop_wh=$(awk -v a="$pre_en" -v b="$en" 'BEGIN{d=(a-b)/1000000; if(d<0)d=0; printf "%.3f", d}')
+    draw_w=$(awk -v wh="$drop_wh" -v s="$dur" 'BEGIN{if(s>0) printf "%.3f", wh*3600/s; else print "0.000"}')
+    jq -cn \
+      --arg startIso "$(jq -r '.iso // ""' <<<"$pre")" \
+      --arg endIso "$iso" \
+      --argjson durationSec "$dur" \
+      --argjson capBefore "$pre_cap" \
+      --argjson capAfter "$cap" \
+      --argjson capDrop "$drop_cap" \
+      --argjson whDrop "$drop_wh" \
+      --argjson drawW "$draw_w" \
+      --arg what "$what" \
+      '{startIso:$startIso,endIso:$endIso,durationSec:$durationSec,capBefore:$capBefore,capAfter:$capAfter,capDrop:$capDrop,whDrop:$whDrop,drawW:$drawW,what:$what}' >> "$SLEEP_LOG"
+    rm -f "$PENDING_SLEEP"
+    ;;
+esac

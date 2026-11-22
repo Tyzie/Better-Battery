@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=../lib/common.sh
+source "$DIR/lib/common.sh"
+
+bat=$(battery_path || true)
+present=false
+percent=0 status="Unknown" watts=0 minutes=0 health=0 wh_full=0 wh_design=0 cycles=0 temp_c=""
+energy_now=0 energy_full=0 energy_design=0 power_uw=0 ac=0
+if [ -n "$bat" ]; then
+  present=true
+  percent=$(read_sys "$bat/capacity" 0)
+  status=$(read_sys "$bat/status" Unknown)
+  cycles=$(read_sys "$bat/cycle_count" 0)
+  energy_now=$(energy_uwh "$bat" energy_now charge_now)
+  energy_full=$(energy_uwh "$bat" energy_full charge_full)
+  energy_design=$(energy_uwh "$bat" energy_full_design charge_full_design)
+  power_uw=$(power_uw "$bat")
+  ac=$(ac_online)
+
+  if [ "${percent:-0}" -ge 99 ]; then
+    case "$status" in
+      Full|"Fully charged"|"Not charging") percent=100 ;;
+    esac
+    if [ "${energy_full:-0}" -gt 0 ] && [ "${energy_now:-0}" -ge "$energy_full" ]; then
+      percent=100
+    fi
+  fi
+
+  t=$(read_sys "$bat/temp" 0)
+  if [ "${t:-0}" -gt 0 ]; then
+    if [ "$t" -gt 2000 ]; then temp_c=$(awk -v x="$t" 'BEGIN{printf "%.0f", x/10-273.15}')
+    else temp_c=$(awk -v x="$t" 'BEGIN{printf "%.0f", x/10}')
+    fi
+  fi
+
+  watts=$(awk -v p="$power_uw" 'BEGIN{printf "%.2f", p/1000000}')
+  wh_full=$(awk -v x="$energy_full" 'BEGIN{printf "%.2f", x/1000000}')
+  wh_design=$(awk -v x="$energy_design" 'BEGIN{printf "%.2f", x/1000000}')
+  if [ "${energy_design:-0}" -gt 0 ]; then
+    health=$(awk -v f="$energy_full" -v d="$energy_design" 'BEGIN{printf "%.0f", f*100/d}')
+  fi
+  if [ "${power_uw:-0}" -gt 0 ]; then
+    case "$status" in
+      Discharging) minutes=$(awk -v e="$energy_now" -v p="$power_uw" 'BEGIN{printf "%d", e/p*60}') ;;
+      Charging) minutes=$(awk -v e="$energy_full" -v n="$energy_now" -v p="$power_uw" 'BEGIN{if(e>n) printf "%d", (e-n)/p*60; else print 0}') ;;
+    esac
+  fi
+fi
+
+full=0
+if [ "${percent:-0}" -ge 100 ] || { [ "${energy_full:-0}" -gt 0 ] && [ "${energy_now:-0}" -ge "$energy_full" ]; }; then
+  full=1
+fi
+track_charge_session "${ac:-0}" "${percent:-0}" "${energy_now:-0}" "$status" "$full"
+
+charge_active=false
+active_sec=0
+active_cap_gain=0
+active_wh_gain=0
+active_rate=0
+if [ -r "$PENDING_CHARGE" ]; then
+  charge_active=true
+  pc=$(cat "$PENDING_CHARGE")
+  pc_ts=$(jq -r '.ts // 0' <<<"$pc")
+  pc_cap=$(jq -r '.cap // 0' <<<"$pc")
+  pc_en=$(jq -r '.energy // 0' <<<"$pc")
+  active_sec=$(( $(date +%s) - pc_ts ))
+  [ "$active_sec" -lt 0 ] && active_sec=0
+  active_cap_gain=$(awk -v a="$pc_cap" -v b="${percent:-0}" 'BEGIN{d=b-a; if(d<0)d=0; printf "%.2f", d}')
+  active_wh_gain=$(awk -v a="$pc_en" -v b="${energy_now:-0}" 'BEGIN{d=(b-a)/1000000; if(d<0)d=0; printf "%.3f", d}')
+  active_rate=$(awk -v wh="$active_wh_gain" -v s="$active_sec" 'BEGIN{if(s>0) printf "%.3f", wh*3600/s; else print "0.000"}')
+fi
+
+profile_mode_value=$(profile_mode)
+auto_mode=false
+[ -f "$AUTO_MODE_FILE" ] && auto_mode=true
+if [ "$auto_mode" = true ]; then
+  profile_current=$(profile_effective auto "${ac:-0}")
+else
+  profile_current=$(profile_effective "$profile_mode_value" "${ac:-0}")
+fi
+governor=$(profile_governor)
+boost=$(profile_boost)
+helper_installed=false
+profile_helper_installed && helper_installed=true
+profiles_json='["econom","normal","power","auto"]'
+
+sleep_summary='{"installed":false,"samples":0,"recent":[]}'
+hook_installed=false
+[ -x /usr/lib/systemd/system-sleep/tyzie-battery-sleep ] && hook_installed=true
+if [ -r "$SLEEP_LOG" ]; then
+  sleep_summary=$(tail -n 200 "$SLEEP_LOG" | jq -Rsc --argjson installed "$([ "$hook_installed" = true ] && echo true || echo false)" '
+    split("\n") | map(select(length>0) | (fromjson? // empty)) as $all |
+    ($all | length) as $samples |
+    ($all | last?) as $last |
+    ($all | .[-10:] ) as $recent |
+    {
+      installed: $installed,
+      samples: $samples,
+      last: $last,
+      avgDrawW: (if ($recent|length)>0 then (($recent|map(.drawW // 0)|add) / ($recent|length)) else 0 end),
+      totalSleepSec: ($all|map(.durationSec // 0)|add // 0),
+      recent: ($recent | map({
+        capDrop: (.capDrop // 0),
+        drawW: (.drawW // 0),
+        durationSec: (.durationSec // 0),
+        endIso: (.endIso // ""),
+        startIso: (.startIso // "")
+      }))
+    }')
+else
+  sleep_summary=$(jq -cn --argjson installed "$([ "$hook_installed" = true ] && echo true || echo false)" '{installed:$installed,samples:0,avgDrawW:0,totalSleepSec:0,recent:[]}')
+fi
+
+charge_json_active='false'
+[ "$charge_active" = true ] && charge_json_active='true'
+charge_summary='{"installed":true,"samples":0,"recent":[],"active":false}'
+if [ -r "$CHARGE_LOG" ]; then
+  charge_summary=$(tail -n 200 "$CHARGE_LOG" | jq -Rsc \
+    --argjson active "$charge_json_active" \
+    --argjson activeSec "$active_sec" \
+    --argjson activeCapGain "$active_cap_gain" \
+    --argjson activeWhGain "$active_wh_gain" \
+    --argjson activeRateW "$active_rate" '
+    split("\n") | map(select(length>0) | (fromjson? // empty)) as $all |
+    ($all|length) as $samples |
+    ($all|last?) as $last |
+    ($all|.[-10:]) as $recent |
+    {
+      installed: true,
+      samples: $samples,
+      last: $last,
+      avgRateW: (if ($recent|length)>0 then (($recent|map(.avgRateW // 0)|add) / ($recent|length)) else 0 end),
+      totalGainWh: (($all|map(.whGain // 0)|add) // 0),
+      totalDurationSec: (($all|map(.durationSec // 0)|add) // 0),
+      recent: ($recent | map({
+        capGain: (.capGain // 0),
+        whGain: (.whGain // 0),
+        avgRateW: (.avgRateW // 0),
+        durationSec: (.durationSec // 0),
+        endIso: (.endIso // ""),
+        startIso: (.startIso // "")
+      })),
+      active: $active,
+      activeSec: $activeSec,
+      activeCapGain: $activeCapGain,
+      activeWhGain: $activeWhGain,
+      activeRateW: $activeRateW
+    }')
+else
+  charge_summary=$(jq -cn \
+    --argjson active "$charge_json_active" \
+    --argjson activeSec "$active_sec" \
+    --argjson activeCapGain "$active_cap_gain" \
+    --argjson activeWhGain "$active_wh_gain" \
+    --argjson activeRateW "$active_rate" \
+    '{installed:true,samples:0,avgRateW:0,totalGainWh:0,totalDurationSec:0,recent:[],active:$active,activeSec:$activeSec,activeCapGain:$activeCapGain,activeWhGain:$activeWhGain,activeRateW:$activeRateW}')
+fi
+
+jq -cn \
+  --argjson present "$([ "$present" = true ] && echo true || echo false)" \
+  --argjson percent "${percent:-0}" \
+  --arg status "$status" \
+  --argjson watts "${watts:-0}" \
+  --argjson minutes "${minutes:-0}" \
+  --argjson health "${health:-0}" \
+  --argjson whFull "${wh_full:-0}" \
+  --argjson whDesign "${wh_design:-0}" \
+  --argjson cycles "${cycles:-0}" \
+  --arg tempC "${temp_c}" \
+  --argjson acOnline "${ac:-0}" \
+  --argjson energyNow "${energy_now:-0}" \
+  --argjson energyFull "${energy_full:-0}" \
+  --arg profileCurrent "$profile_current" \
+  --arg profileMode "$([ "$auto_mode" = true ] && echo auto || echo "$profile_mode_value")" \
+  --arg governor "$governor" \
+  --argjson boost "$boost" \
+  --argjson autoMode "$([ "$auto_mode" = true ] && echo true || echo false)" \
+  --argjson helperInstalled "$([ "$helper_installed" = true ] && echo true || echo false)" \
+  --argjson profiles "$profiles_json" \
+  --argjson sleep "$sleep_summary" \
+  --argjson charge "$charge_summary" \
+  '{
+    battery: {
+      present:$present, percent:$percent, status:$status, watts:$watts, minutes:$minutes,
+      health:$health, whFull:$whFull, whDesign:$whDesign, cycles:$cycles, tempC:$tempC,
+      acOnline:$acOnline, energyNow:$energyNow, energyFull:$energyFull
+    },
+    profiles: {
+      current:$profileCurrent, mode:$profileMode, auto:$autoMode, available:$profiles,
+      governor:$governor, boost:$boost, helperInstalled:$helperInstalled
+    },
+    sleep: $sleep,
+    charge: $charge
+  }'
