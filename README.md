@@ -1,4 +1,4 @@
-# tyzie.battery
+# Better Battery
 
 Omarchy shell bar widget for battery status, with a detailed keyboard panel.
 
