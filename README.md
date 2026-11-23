@@ -1,4 +1,4 @@
-# tyzie.better-battery-fixed
+# Better Battery
 
 Omarchy shell bar widget for battery status, with a detailed keyboard panel.
 
@@ -29,13 +29,13 @@ inside the shell with the desktop user's privileges only.
 Enabled through `~/.config/omarchy/shell.json`:
 
 ```json
-{ "id": "tyzie.better-battery-fixed", "showPercentage": false }
+{ "id": "tyzie.better-battery", "showPercentage": false }
 ```
 
 Move it with:
 
 ```bash
-omarchy bar move tyzie.better-battery-fixed --section right
+omarchy bar move tyzie.better-battery --section right
 ```
 
 Right-click the bar icon to toggle the on-bar percentage, or set `showPercentage`
