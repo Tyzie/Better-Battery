@@ -2,11 +2,6 @@
 
 Omarchy shell bar widget for battery status, with a detailed keyboard panel.
 
-This is a security-hardened rebuild of `tyzie.better-battery`. It removes the
-privileged systemd sleep hook that executed user-writable plugin code as root.
-Sleep statistics are now collected by a user-level logind monitor that runs
-inside the shell with the desktop user's privileges only.
-
 ## Features
 
 - Bar icon with optional percentage (right-click icon toggles percentage, or use widget setting).
