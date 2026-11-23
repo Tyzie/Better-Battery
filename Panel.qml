@@ -38,9 +38,11 @@ Panel {
     battery: { present: false, percent: 0, status: "Unknown", watts: 0, minutes: 0, health: 0, whFull: 0, whDesign: 0, cycles: 0, tempC: "", acOnline: 0 },
     profiles: { current: "unknown", auto: false, available: [] },
     sleep: { installed: true, mode: "user", samples: 0, avgDrawW: 0, totalSleepSec: 0, last: null, recent: [] },
+    sleepHook: { present: false, legacy: false, readable: false, ownedByRoot: false },
     charge: { installed: true, samples: 0, recent: [], active: false }
   })
   property string debugError: ""
+  property string hookMessage: ""
   property var wattHistory: []
   property int wattHistoryMax: 60
 
@@ -95,6 +97,7 @@ Panel {
   })
   readonly property var profiles: snapshot.profiles || ({})
   readonly property var sleep: snapshot.sleep || ({})
+  readonly property var sleepHook: snapshot.sleepHook || ({})
   readonly property var charge: snapshot.charge || ({})
   readonly property string activeMode: Model.activeProfileMode(profiles)
   readonly property bool hasBattery: b.present === true
@@ -128,6 +131,11 @@ Panel {
 
   function clearSleepStats() {
     runAction([scriptPath("battery-action"), "clear-sleep"])
+  }
+
+  function cleanupSleepHook() {
+    if (hookProc.running) return
+    hookProc.running = true
   }
 
   function clearChargeHistory() {
@@ -199,6 +207,25 @@ Panel {
         var parsed = Model.parseSnapshot(String(text || ""))
         if (parsed) root.snapshot = parsed
         else root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: hookProc
+    command: [root.scriptPath("battery-action"), "cleanup-sleep-hook"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parsed = Model.parseHookResult(String(text || ""))
+        if (parsed) root.hookMessage = Model.plain(parsed.message, 120)
+        root.refresh()
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (String(text || "").trim()) root.hookMessage = Model.plain(String(text), 120)
       }
     }
   }
@@ -733,6 +760,65 @@ Panel {
             textFormat: Text.PlainText
             text: tr("sleep.noStats") + " " + tr("sleep.activeHint")
             color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          PanelSeparator { foreground: root.fg }
+          PanelSectionHeader { text: tr("hook.title"); foreground: root.fg; fontFamily: root.fontFamily }
+
+          Text {
+            width: parent.width
+            visible: sleepHook.legacy === true
+            textFormat: Text.PlainText
+            text: tr("hook.warning")
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            visible: sleepHook.legacy !== true
+            textFormat: Text.PlainText
+            text: Model.hookStatusLabel(sleepHook, root.tr)
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Button {
+            visible: sleepHook.legacy === true
+            enabled: !hookProc.running
+            width: parent.width
+            text: hookProc.running ? tr("hook.working") : tr("hook.remove")
+            bordered: true
+            focusable: true
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.cleanupSleepHook()
+          }
+
+          Text {
+            width: parent.width
+            visible: sleepHook.legacy === true
+            textFormat: Text.PlainText
+            text: tr("hook.hint")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            visible: root.hookMessage !== ""
+            textFormat: Text.PlainText
+            text: root.hookMessage
+            color: root.fg
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap

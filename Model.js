@@ -14,6 +14,29 @@ function plain(value, limit) {
   return text.length > max ? text.slice(0, max) + "\u2026" : text
 }
 
+function truthy(v) { return v === true }
+
+function parseHook(h) {
+  var src = h && typeof h === "object" && !Array.isArray(h) ? h : {}
+  return {
+    present: truthy(src.present),
+    legacy: truthy(src.legacy),
+    readable: truthy(src.readable),
+    ownedByRoot: truthy(src.ownedByRoot)
+  }
+}
+
+function parseHookResult(text) {
+  try {
+    var data = JSON.parse(String(text || ""))
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null
+    if (["removed", "absent", "error"].indexOf(String(data.status || "")) < 0) return null
+    return { status: String(data.status), message: plain(data.message, MAX_TEXT) }
+  } catch (error) {
+    return null
+  }
+}
+
 function num(v, fallback) {
   var n = Number(v)
   return isFinite(n) ? n : (fallback === undefined ? 0 : fallback)
@@ -133,6 +156,7 @@ function parseSnapshot(text) {
         helperInstalled: p.helperInstalled === true
       },
       sleep: sleepSummary(data.sleep),
+      sleepHook: parseHook(data.sleepHook),
       charge: chargeSummary(data.charge)
     }
   } catch (error) {
@@ -207,6 +231,12 @@ function statusLabel(b, tr) {
   if (b.status === "Discharging") return tr("status.discharging")
   if (b.status === "Full" || b.status === "Not charging") return tr("status.full")
   return tr("status.unknown")
+}
+
+function hookStatusLabel(h, tr) {
+  if (!h || h.present !== true) return tr("hook.clean")
+  if (h.legacy !== true) return tr("hook.unknown")
+  return tr("hook.stale")
 }
 
 function profileLabel(mode, tr) {

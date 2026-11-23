@@ -2,7 +2,8 @@
 set -euo pipefail
 export LC_ALL=C
 
-PLUGIN_ID="tyzie.better-battery-fixed"
+PLUGIN_ID="tyzie.better-battery"
+LEGACY_SLEEP_HOOK="/usr/lib/systemd/system-sleep/tyzie-battery-sleep"
 
 resolve_user() {
   local u
@@ -37,8 +38,8 @@ PENDING_CHARGE="$STATE_DIR/pending-charge.json"
 CHARGE_STATE="$STATE_DIR/charge-state"
 AUTO_MODE_FILE="$STATE_DIR/auto-mode"
 PROFILE_MODE_FILE="$STATE_DIR/profile-mode"
-PROFILE_HELPER="/usr/local/libexec/tyzie-better-battery-fixed-profile"
-PROFILE_SUDOERS="/etc/sudoers.d/tyzie-better-battery-fixed"
+PROFILE_HELPER="/usr/local/libexec/tyzie-better-battery-profile"
+PROFILE_SUDOERS="/etc/sudoers.d/tyzie-better-battery"
 PROFILE_HELPER_MARKER="$STATE_DIR/profile-helper-installed"
 
 mkdir -p "$STATE_DIR" "$CONFIG_DIR" 2>/dev/null || true
@@ -176,6 +177,73 @@ finish_charge_session() {
       '{startIso:$startIso,endIso:$endIso,durationSec:$durationSec,startCap:$startCap,endCap:$endCap,capGain:$capGain,whGain:$whGain,avgRateW:$avgRateW,status:$status}' >> "$CHARGE_LOG"
   fi
   rm -f "$PENDING_CHARGE"
+}
+
+emit_hook_result() {
+  jq -cn --arg status "$1" --arg message "$2" '{status:$status,message:$message}'
+}
+
+legacy_sleep_hook_status() {
+  local present=false legacy=false readable=false owned_by_root=false
+  if [ -e "$LEGACY_SLEEP_HOOK" ] || [ -L "$LEGACY_SLEEP_HOOK" ]; then
+    present=true
+  fi
+  if [ -f "$LEGACY_SLEEP_HOOK" ] && [ ! -L "$LEGACY_SLEEP_HOOK" ] && [ -r "$LEGACY_SLEEP_HOOK" ]; then
+    readable=true
+    if [ "$(stat -c '%u' -- "$LEGACY_SLEEP_HOOK" 2>/dev/null || echo -1)" = "0" ]; then
+      owned_by_root=true
+    fi
+    if grep -qF 'omarchy/plugins/' "$LEGACY_SLEEP_HOOK" 2>/dev/null && grep -qF 'battery-sleep-hook' "$LEGACY_SLEEP_HOOK" 2>/dev/null; then
+      legacy=true
+    fi
+  fi
+  jq -cn \
+    --argjson present "$present" \
+    --argjson legacy "$legacy" \
+    --argjson readable "$readable" \
+    --argjson ownedByRoot "$owned_by_root" \
+    '{present:$present,legacy:$legacy,readable:$readable,ownedByRoot:$ownedByRoot}'
+}
+
+legacy_sleep_hook_cleanup() {
+  local rm_bin mode="${1:-}"
+  if [ ! -e "$LEGACY_SLEEP_HOOK" ] && [ ! -L "$LEGACY_SLEEP_HOOK" ]; then
+    emit_hook_result absent "No stale sleep hook found."
+    return 0
+  fi
+  if [ -L "$LEGACY_SLEEP_HOOK" ] || [ ! -f "$LEGACY_SLEEP_HOOK" ] || [ ! -r "$LEGACY_SLEEP_HOOK" ]; then
+    emit_hook_result error "Unexpected hook type; refusing to remove it."
+    return 1
+  fi
+  if [ "$(stat -c '%u' -- "$LEGACY_SLEEP_HOOK" 2>/dev/null || echo -1)" != "0" ]; then
+    emit_hook_result error "Hook is not root-owned; refusing to remove it."
+    return 1
+  fi
+  if ! grep -qF 'omarchy/plugins/' "$LEGACY_SLEEP_HOOK" || ! grep -qF 'battery-sleep-hook' "$LEGACY_SLEEP_HOOK"; then
+    emit_hook_result error "Hook content does not match the known legacy wrapper; refusing to remove it."
+    return 1
+  fi
+  rm_bin=$(command -v rm) || {
+    emit_hook_result error "rm is not available."
+    return 1
+  }
+  if [ "$mode" = "--sudo" ]; then
+    have sudo || { emit_hook_result error "sudo is not available."; return 1; }
+    sudo "$rm_bin" -f -- "$LEGACY_SLEEP_HOOK"
+  elif [ "$mode" = "--pkexec" ] || have pkexec; then
+    have pkexec || { emit_hook_result error "pkexec is not available."; return 1; }
+    pkexec "$rm_bin" -f -- "$LEGACY_SLEEP_HOOK"
+  elif have sudo; then
+    sudo "$rm_bin" -f -- "$LEGACY_SLEEP_HOOK"
+  else
+    emit_hook_result error "No privilege escalation tool is available."
+    return 1
+  fi
+  if [ -e "$LEGACY_SLEEP_HOOK" ] || [ -L "$LEGACY_SLEEP_HOOK" ]; then
+    emit_hook_result error "Removal failed; the hook is still present."
+    return 1
+  fi
+  emit_hook_result removed "Stale sleep hook removed."
 }
 
 track_charge_session() {

@@ -18,6 +18,9 @@ Omarchy shell bar widget for battery status, with a detailed keyboard panel.
   last-10 graph. Collected automatically by the user-level `battery-sleep-monitor`;
   no root access and no hook installation are needed. Sleeps that stay on AC are
   skipped.
+- Legacy sleep hook cleanup: detects a stale root-run wrapper left by older
+  installs, shows it in the panel, and removes it on demand after verifying its
+  exact path, root ownership, and known wrapper contents.
 
 ## Install
 
@@ -36,10 +39,32 @@ omarchy bar move tyzie.better-battery --section right
 Right-click the bar icon to toggle the on-bar percentage, or set `showPercentage`
 in the widget settings. `pollIntervalSec` controls how often the open panel refreshes.
 
+## Legacy sleep hook cleanup
+
+Older installs could leave `/usr/lib/systemd/system-sleep/tyzie-battery-sleep`,
+a root-run wrapper that executes a user-writable plugin path. This plugin checks
+that exact path on every panel refresh and offers a one-click removal in the
+"Legacy sleep hook" section of the panel. The removal is guarded: the file must
+be a regular, root-owned, readable file containing the known legacy wrapper
+strings; symlinks, unexpected files, and unexpected contents are never touched.
+A single system authorization prompt is used to delete that one path. No new
+privileged hook is installed.
+
+It can also be removed from a terminal:
+
+```bash
+~/.config/omarchy/plugins/tyzie.better-battery/bin/battery-action cleanup-sleep-hook
+```
+
+Omit nothing for `pkexec`; add `--sudo` only inside an interactive terminal if
+no polkit frontend is available (the action script forwards that flag).
+
 ## Security notes
 
 - No script in this plugin installs a system-sleep wrapper or any other root-run
-  file that references a path under `~/.config/omarchy/plugins/`.
+  file that references a path under `~/.config/omarchy/plugins/`. The only
+  privileged operation is removing the exact verified legacy wrapper described
+  above.
 - `battery-sleep-monitor` listens to `org.freedesktop.login1.Manager.PrepareForSleep`
   over the system bus as the desktop user and writes only to the user's own state
   directory. A compromised desktop user account cannot gain root through it.

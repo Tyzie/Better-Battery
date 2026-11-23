@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tyzie.better-battery",
   "name": "Better Battery",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "tyzie",
   "license": "MIT",
   "description": "Battery bar widget with detailed stats, charging history, user-level sleep tracking, and power profiles.",

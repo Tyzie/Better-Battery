@@ -5,7 +5,7 @@ const path = require("node:path")
 
 const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-const model = new Function(`${source}; return { plain, parseSnapshot, statusLabel, batteryIcon };`)()
+const model = new Function(`${source}; return { plain, parseSnapshot, statusLabel, batteryIcon, parseHook, parseHookResult, hookStatusLabel };`)()
 
 test("plain neutralizes markup and control characters", () => {
   const dirty = '<img src="https://example.invalid/tracker">\u0001hello'
@@ -62,4 +62,27 @@ test("statusLabel and batteryIcon only use known states", () => {
   assert.equal(model.statusLabel({ present: true, status: "<b>Full</b>" }, tr), "status.unknown")
   assert.equal(model.batteryIcon(100, "Charging"), "󰂅")
   assert.equal(model.batteryIcon(5, "Discharging"), "󰂃")
+})
+
+test("sleepHook is parsed to typed booleans only", () => {
+  const snap = model.parseSnapshot(JSON.stringify({
+    sleepHook: { present: true, legacy: "yes", readable: true, ownedByRoot: false, extra: "<b>x</b>" }
+  }))
+  assert.deepEqual(snap.sleepHook, { present: true, legacy: false, readable: true, ownedByRoot: false })
+  assert.deepEqual(model.parseHook(null), { present: false, legacy: false, readable: false, ownedByRoot: false })
+})
+
+test("parseHookResult whitelists status and sanitizes message", () => {
+  assert.equal(model.parseHookResult('{"status":"rm -rf /","message":"x"}'), null)
+  assert.equal(model.parseHookResult("not json"), null)
+  const result = model.parseHookResult('{"status":"error","message":"<img src=x>bad</img>"}')
+  assert.equal(result.status, "error")
+  assert.equal(result.message, "img src=xbad/img")
+})
+
+test("hookStatusLabel only uses known states", () => {
+  const tr = key => key
+  assert.equal(model.hookStatusLabel({ present: false }, tr), "hook.clean")
+  assert.equal(model.hookStatusLabel({ present: true, legacy: true }, tr), "hook.stale")
+  assert.equal(model.hookStatusLabel({ present: true, legacy: false }, tr), "hook.unknown")
 })

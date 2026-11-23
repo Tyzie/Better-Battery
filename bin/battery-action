@@ -38,18 +38,18 @@ install_profile_helper() {
   sudoers="$tmpdir/sudoers"
   cp "$DIR/bin/battery-profile-helper" "$helper"
   cat >"$sudoers" <<EOF
-# tyzie.better-battery-fixed custom CPU profile helper
+# tyzie.better-battery custom CPU profile helper
 $USER_NAME ALL=(root) NOPASSWD: $PROFILE_HELPER powersave 0, $PROFILE_HELPER powersave 1, $PROFILE_HELPER performance 0, $PROFILE_HELPER performance 1
 EOF
   body='
 set -euo pipefail
-install -Dm750 -o root -g root "$1" /usr/local/libexec/tyzie-better-battery-fixed-profile
-install -Dm440 -o root -g root "$2" /etc/sudoers.d/.tyzie-better-battery-fixed.tmp
-if visudo -c -f /etc/sudoers.d/.tyzie-better-battery-fixed.tmp >/dev/null 2>&1; then
-  mv -f /etc/sudoers.d/.tyzie-better-battery-fixed.tmp /etc/sudoers.d/tyzie-better-battery-fixed
-  chmod 440 /etc/sudoers.d/tyzie-better-battery-fixed
+install -Dm750 -o root -g root "$1" /usr/local/libexec/tyzie-better-battery-profile
+install -Dm440 -o root -g root "$2" /etc/sudoers.d/.tyzie-better-battery.tmp
+if visudo -c -f /etc/sudoers.d/.tyzie-better-battery.tmp >/dev/null 2>&1; then
+  mv -f /etc/sudoers.d/.tyzie-better-battery.tmp /etc/sudoers.d/tyzie-better-battery
+  chmod 440 /etc/sudoers.d/tyzie-better-battery
 else
-  rm -f /etc/sudoers.d/.tyzie-better-battery-fixed.tmp
+  rm -f /etc/sudoers.d/.tyzie-better-battery.tmp
   echo "sudoers validation failed" >&2
   exit 1
 fi
@@ -73,6 +73,10 @@ case "$cmd" in
   install-profile-helper) install_profile_helper ;;
   clear-sleep)
     rm -f "$SLEEP_LOG" "$PENDING_SLEEP"
+    ;;
+  cleanup-sleep-hook)
+    legacy_sleep_hook_cleanup "${2:-}"
+    exit $?
     ;;
   clear-charge)
     rm -f "$CHARGE_LOG" "$PENDING_CHARGE" "$CHARGE_STATE"

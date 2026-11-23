@@ -113,6 +113,8 @@ else
   sleep_summary=$(jq -cn '{installed:true,mode:"user",samples:0,avgDrawW:0,totalSleepSec:0,recent:[]}')
 fi
 
+sleep_hook_json=$(legacy_sleep_hook_status)
+
 charge_json_active='false'
 [ "$charge_active" = true ] && charge_json_active='true'
 charge_summary='{"installed":true,"samples":0,"recent":[],"active":false}'
@@ -180,6 +182,7 @@ jq -cn \
   --argjson helperInstalled "$([ "$helper_installed" = true ] && echo true || echo false)" \
   --argjson profiles "$profiles_json" \
   --argjson sleep "$sleep_summary" \
+  --argjson sleepHook "$sleep_hook_json" \
   --argjson charge "$charge_summary" \
   '{
     battery: {
@@ -192,5 +195,6 @@ jq -cn \
       governor:$governor, boost:$boost, helperInstalled:$helperInstalled
     },
     sleep: $sleep,
+    sleepHook: $sleepHook,
     charge: $charge
   }'
