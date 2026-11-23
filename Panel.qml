@@ -5,15 +5,25 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
 Panel {
   id: root
 
-  moduleName: "tyzie.battery"
-  ipcTarget: "tyzie.battery"
+  moduleName: "tyzie.better-battery"
+  ipcTarget: "tyzie.better-battery"
   manageIpc: false
+
+  Commons.Translations {
+    id: strings
+    directory: Qt.resolvedUrl("i18n")
+  }
+
+  function tr(key) { return Model.plain(strings.t(key)) }
+  function trn(key, count) { return Model.plain(strings.tn(key, count)) }
+  function num(value, decimals) { return decimals === undefined ? Commons.I18n.formatNumber(value) : Commons.I18n.formatNumber(value, decimals) }
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(fg, 1.45)
@@ -27,7 +37,8 @@ Panel {
   property var snapshot: ({
     battery: { present: false, percent: 0, status: "Unknown", watts: 0, minutes: 0, health: 0, whFull: 0, whDesign: 0, cycles: 0, tempC: "", acOnline: 0 },
     profiles: { current: "unknown", auto: false, available: [] },
-    sleep: { installed: false, samples: 0, avgDrawW: 0, totalSleepSec: 0, last: null }
+    sleep: { installed: true, mode: "user", samples: 0, avgDrawW: 0, totalSleepSec: 0, last: null, recent: [] },
+    charge: { installed: true, samples: 0, recent: [], active: false }
   })
   property string debugError: ""
   property var wattHistory: []
@@ -111,10 +122,6 @@ Panel {
     runAction([scriptPath("battery-action"), "profile", mode])
   }
 
-  function installSleepHook() {
-    runAction([scriptPath("battery-action"), "install-sleep-hook"])
-  }
-
   function installProfileHelper() {
     runAction([scriptPath("battery-action"), "install-profile-helper"])
   }
@@ -142,6 +149,14 @@ Panel {
 
   Component.onCompleted: refresh()
 
+  Process {
+    id: sleepMonitor
+    command: [root.scriptPath("battery-sleep-monitor")]
+    running: true
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+  }
+
   Timer {
     interval: root.opened ? root.pollInterval : 30000
     running: true
@@ -164,16 +179,12 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        try {
-          var parsed = JSON.parse(String(text || "").trim())
-          if (parsed && parsed.battery) {
-            root.snapshot = parsed
-            root.debugError = ""
-          } else {
-            root.debugError = "No battery data"
-          }
-        } catch (e) {
-          root.debugError = "Parse error"
+        var parsed = Model.parseSnapshot(String(text || ""))
+        if (parsed) {
+          root.snapshot = parsed
+          root.debugError = ""
+        } else {
+          root.debugError = tr("status.noBattery")
         }
       }
     }
@@ -185,10 +196,9 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        try {
-          var parsed = JSON.parse(String(text || "").trim())
-          if (parsed && parsed.battery) root.snapshot = parsed
-        } catch (e) { root.refresh() }
+        var parsed = Model.parseSnapshot(String(text || ""))
+        if (parsed) root.snapshot = parsed
+        else root.refresh()
       }
     }
   }
@@ -213,9 +223,9 @@ Panel {
       ? (Model.batteryIcon(hasBattery ? b.percent : 0, b.status) + "  " + (hasBattery ? b.percent : 0) + "%")
       : Model.batteryIcon(hasBattery ? b.percent : 0, b.status)
     slotSize: Style.bar.iconSlot * (root.showPercentage && !vertical ? 2.2 : 1)
-    tooltipText: hasBattery
-      ? ("Battery " + b.percent + "% · " + Model.statusLabel(b) + (b.watts > 0 ? " · " + Model.fmtWatts(b.watts) : ""))
-      : ("No battery detected" + (debugError ? " · " + debugError : ""))
+    tooltipText: Model.plain(hasBattery
+      ? tr("tooltip.battery").arg(root.num(b.percent)).arg(Model.statusLabel(b, root.tr)).arg(b.watts > 0 ? tr("tooltip.draw").arg(Model.fmtWatts(b.watts)) : "")
+      : tr("tooltip.noBattery").arg(debugError ? tr("tooltip.debug").arg(Model.plain(debugError, 80)) : ""), 160)
     onPressed: function(btn) {
       if (btn === Qt.RightButton) root.togglePercentage()
       else root.toggle()
@@ -257,12 +267,15 @@ Panel {
 
           PanelHero {
             width: parent.width
-            title: "Battery"
-            meta: Model.statusLabel(b) + (b.status === "Charging" && b.minutes > 0 ? " · " + Model.fmtDuration(b.minutes) + " to full" : (b.status === "Discharging" && b.minutes > 0 ? " · " + Model.fmtDuration(b.minutes) + " left" : ""))
+            title: tr("panel.title")
+            meta: Model.plain(Model.statusLabel(b, root.tr) + (b.status === "Charging" && b.minutes > 0
+              ? " · " + tr("hero.toFull").arg(Model.fmtDuration(b.minutes))
+              : (b.status === "Discharging" && b.minutes > 0 ? " · " + tr("hero.left").arg(Model.fmtDuration(b.minutes)) : "")), 160)
             foreground: root.fg
             fontFamily: root.fontFamily
             iconComponent: Component {
               Text {
+                textFormat: Text.PlainText
                 text: Model.batteryIcon(b.percent, b.status)
                 color: b.percent <= 10 && b.status === "Discharging" ? root.urgent : root.fg
                 font.family: root.fontFamily
@@ -271,7 +284,8 @@ Panel {
             }
             trailingControl: Component {
               Text {
-                text: (b.percent || 0) + "%"
+                textFormat: Text.PlainText
+                text: root.num(b.percent) + "%"
                 color: root.fg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.displayLarge
@@ -299,27 +313,27 @@ Panel {
             columnSpacing: Style.space(14)
             rowSpacing: Style.space(8)
 
-            Stat { label: "Charge"; value: (b.percent || 0) + "%" }
-            Stat { label: "Status"; value: Model.statusLabel(b) }
-            Stat { label: "Draw"; value: Model.fmtWatts(b.watts) }
-            Stat { label: "Time"; value: b.status === "Charging" ? Model.fmtDuration(b.minutes) + " to full" : (b.status === "Discharging" ? Model.fmtDuration(b.minutes) + " left" : "—") }
-            Stat { label: "Health"; value: b.health ? b.health + "%" : "—" }
-            Stat { label: "Cycles"; value: b.cycles ? String(b.cycles) : "—" }
-            Stat { label: "Capacity"; value: b.whFull > 0 ? (Number(b.whFull).toFixed(1) + " / " + Number(b.whDesign).toFixed(1) + " Wh") : "—" }
-            Stat { label: "Temp"; value: Model.fmtTemp(b.tempC) }
+            Stat { label: tr("stat.charge"); value: root.num(b.percent) + "%" }
+            Stat { label: tr("stat.status"); value: Model.statusLabel(b, root.tr) }
+            Stat { label: tr("stat.draw"); value: Model.fmtWatts(b.watts) }
+            Stat { label: tr("stat.time"); value: b.status === "Charging" ? tr("hero.toFull").arg(Model.fmtDuration(b.minutes)) : (b.status === "Discharging" ? tr("hero.left").arg(Model.fmtDuration(b.minutes)) : "—") }
+            Stat { label: tr("stat.health"); value: b.health ? root.num(b.health) + "%" : "—" }
+            Stat { label: tr("stat.cycles"); value: b.cycles ? root.num(b.cycles) : "—" }
+            Stat { label: tr("stat.capacity"); value: b.whFull > 0 ? (root.num(b.whFull, 1) + " / " + root.num(b.whDesign, 1) + " Wh") : "—" }
+            Stat { label: tr("stat.temp"); value: Model.fmtTemp(b.tempC) }
           }
 
           PanelSeparator { foreground: root.fg }
-          PanelSectionHeader { text: "POWER PROFILE"; foreground: root.fg; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: tr("section.powerProfile"); foreground: root.fg; fontFamily: root.fontFamily }
 
           RowLayout {
             width: parent.width
             spacing: Style.space(6)
 
-            ProfileButton { label: "Econom"; mode: "econom" }
-            ProfileButton { label: "Normal"; mode: "normal" }
-            ProfileButton { label: "Power"; mode: "power" }
-            ProfileButton { label: "Auto"; mode: "auto" }
+            ProfileButton { label: tr("profile.econom"); mode: "econom" }
+            ProfileButton { label: tr("profile.normal"); mode: "normal" }
+            ProfileButton { label: tr("profile.power"); mode: "power" }
+            ProfileButton { label: tr("profile.auto"); mode: "auto" }
           }
 
           GridLayout {
@@ -328,16 +342,16 @@ Panel {
             columnSpacing: Style.space(14)
             rowSpacing: Style.space(8)
 
-            Stat { label: "CPU governor"; value: String(profiles.governor || "unknown") }
-            Stat { label: "Turbo boost"; value: Number(profiles.boost) === 1 ? "On" : (Number(profiles.boost) === 0 ? "Off" : "—") }
+            Stat { label: tr("profile.cpuGovernor"); value: Model.plain(profiles.governor, 32) || "unknown" }
+            Stat { label: tr("profile.turboBoost"); value: Number(profiles.boost) === 1 ? tr("profile.on") : (Number(profiles.boost) === 0 ? tr("profile.off") : "—") }
           }
 
           Text {
             width: parent.width
             textFormat: Text.PlainText
             text: root.activeMode === "auto"
-              ? "Auto: AC -> Power, battery -> Econom. Custom CPU profiles."
-              : ("Active: " + Model.profileLabel(root.activeMode) + " · " + String(profiles.governor || "unknown") + " · boost " + (Number(profiles.boost) === 1 ? "on" : "off"))
+              ? tr("profile.autoHint")
+              : tr("profile.activeHint").arg(Model.profileLabel(root.activeMode, root.tr)).arg(Model.plain(profiles.governor, 32) || "unknown").arg(Number(profiles.boost) === 1 ? tr("profile.on") : tr("profile.off"))
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -346,7 +360,7 @@ Panel {
 
           Button {
             visible: profiles.helperInstalled !== true
-            text: "Install profile helper"
+            text: tr("profile.install")
             bordered: true
             focusable: true
             foreground: root.fg
@@ -355,7 +369,7 @@ Panel {
           }
 
           PanelSeparator { foreground: root.fg }
-          PanelSectionHeader { text: "POWER DRAW"; foreground: root.fg; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: tr("section.powerDraw"); foreground: root.fg; fontFamily: root.fontFamily }
 
           Column {
             width: parent.width
@@ -366,10 +380,10 @@ Panel {
               columns: 4
               columnSpacing: Style.space(8)
               rowSpacing: Style.space(6)
-              MiniStat { label: "Now"; value: Model.fmtWatts(root.wattStat("now")) }
-              MiniStat { label: "Avg"; value: Model.fmtWatts(root.wattStat("avg")) }
-              MiniStat { label: "Min"; value: Model.fmtWatts(root.wattStat("min")) }
-              MiniStat { label: "Max"; value: Model.fmtWatts(root.wattStat("max")) }
+              MiniStat { label: tr("power.now"); value: Model.fmtWatts(root.wattStat("now")) }
+              MiniStat { label: tr("power.avg"); value: Model.fmtWatts(root.wattStat("avg")) }
+              MiniStat { label: tr("power.min"); value: Model.fmtWatts(root.wattStat("min")) }
+              MiniStat { label: tr("power.max"); value: Model.fmtWatts(root.wattStat("max")) }
             }
 
             Rectangle {
@@ -425,7 +439,8 @@ Panel {
                 Text {
                   anchors.left: parent.left
                   anchors.top: parent.top
-                  text: wattGraph.maxW.toFixed(1) + "W"
+                  textFormat: Text.PlainText
+                  text: root.num(wattGraph.maxW, 1) + "W"
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption - 1
@@ -433,6 +448,7 @@ Panel {
                 Text {
                   anchors.left: parent.left
                   anchors.bottom: parent.bottom
+                  textFormat: Text.PlainText
                   text: "0W"
                   color: root.dim
                   font.family: root.fontFamily
@@ -443,7 +459,8 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Live samples while panel is open · " + root.wattHistory.length + "/" + root.wattHistoryMax
+              textFormat: Text.PlainText
+              text: tr("power.samples").arg(root.num(root.wattHistory.length)).arg(root.num(root.wattHistoryMax))
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -452,7 +469,7 @@ Panel {
           }
 
           PanelSeparator { foreground: root.fg }
-          PanelSectionHeader { text: "CHARGING HISTORY"; foreground: root.fg; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: tr("section.chargeHistory"); foreground: root.fg; fontFamily: root.fontFamily }
 
           Column {
             width: parent.width
@@ -464,15 +481,15 @@ Panel {
               columnSpacing: Style.space(14)
               rowSpacing: Style.space(8)
 
-              Stat { visible: charge.active === true; label: "Session"; value: Model.fmtElapsed(charge.activeSec || 0) }
-              Stat { visible: charge.active === true; label: "Gained"; value: Model.fmtGain(charge.activeCapGain || 0) + " / " + Model.fmtWh(charge.activeWhGain || 0) }
-              Stat { visible: charge.active === true; label: "Rate"; value: Model.fmtWatts(charge.activeRateW || 0) }
-              Stat { visible: Number(charge.samples || 0) > 0; label: "Sessions"; value: String(charge.samples || 0) }
-              Stat { visible: Number(charge.samples || 0) > 0; label: "Avg rate"; value: Model.fmtWatts(charge.avgRateW || 0) }
-              Stat { visible: Number(charge.samples || 0) > 0; label: "Total gained"; value: Model.fmtWh(charge.totalGainWh || 0) }
-              Stat { visible: Number(charge.samples || 0) > 0; label: "Last session"; value: Model.fmtElapsed(charge.last ? charge.last.durationSec : 0) }
-              Stat { visible: Number(charge.samples || 0) > 0; label: "Last gain"; value: charge.last ? (Model.fmtGain(charge.last.capGain) + " / " + Model.fmtWh(charge.last.whGain)) : "—" }
-              Stat { visible: Number(charge.samples || 0) > 0; label: "Last rate"; value: charge.last ? Model.fmtWatts(charge.last.avgRateW) : "—" }
+              Stat { visible: charge.active === true; label: tr("charge.session"); value: Model.fmtElapsed(charge.activeSec || 0) }
+              Stat { visible: charge.active === true; label: tr("charge.gained"); value: Model.fmtGain(charge.activeCapGain || 0) + " / " + Model.fmtWh(charge.activeWhGain || 0) }
+              Stat { visible: charge.active === true; label: tr("charge.rate"); value: Model.fmtWatts(charge.activeRateW || 0) }
+              Stat { visible: Number(charge.samples || 0) > 0; label: tr("charge.sessions"); value: root.num(charge.samples || 0) }
+              Stat { visible: Number(charge.samples || 0) > 0; label: tr("charge.avgRate"); value: Model.fmtWatts(charge.avgRateW || 0) }
+              Stat { visible: Number(charge.samples || 0) > 0; label: tr("charge.totalGained"); value: Model.fmtWh(charge.totalGainWh || 0) }
+              Stat { visible: Number(charge.samples || 0) > 0; label: tr("charge.lastSession"); value: Model.fmtElapsed(charge.last ? charge.last.durationSec : 0) }
+              Stat { visible: Number(charge.samples || 0) > 0; label: tr("charge.lastGain"); value: charge.last ? (Model.fmtGain(charge.last.capGain) + " / " + Model.fmtWh(charge.last.whGain)) : "—" }
+              Stat { visible: Number(charge.samples || 0) > 0; label: tr("charge.lastRate"); value: charge.last ? Model.fmtWatts(charge.last.avgRateW) : "—" }
             }
 
             Item {
@@ -483,7 +500,7 @@ Panel {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
-                text: "LAST 10 CHARGE SESSIONS"
+                text: tr("charge.recentTitle")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -493,7 +510,7 @@ Panel {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
-                text: "battery % gained"
+                text: tr("charge.unit")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -568,7 +585,7 @@ Panel {
 
             Button {
               visible: Number(charge.samples || 0) > 0
-              text: "Clear charging history"
+              text: tr("charge.clear")
               bordered: true
               focusable: true
               foreground: root.fg
@@ -580,7 +597,7 @@ Panel {
               width: parent.width
               visible: charge.active !== true && Number(charge.samples || 0) === 0
               textFormat: Text.PlainText
-              text: "No charging sessions recorded yet. Plug in to start tracking."
+              text: tr("charge.empty")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -589,12 +606,12 @@ Panel {
           }
 
           PanelSeparator { foreground: root.fg }
-          PanelSectionHeader { text: "SLEEP STATISTICS"; foreground: root.fg; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: tr("section.sleepStats"); foreground: root.fg; fontFamily: root.fontFamily }
 
           Column {
             width: parent.width
             spacing: Style.space(8)
-            visible: sleep.installed === true && Number(sleep.samples || 0) > 0
+            visible: Number(sleep.samples || 0) > 0
 
             GridLayout {
               width: parent.width
@@ -602,12 +619,12 @@ Panel {
               columnSpacing: Style.space(14)
               rowSpacing: Style.space(8)
 
-              Stat { label: "Sleep count"; value: String(sleep.samples || 0) }
-              Stat { label: "Avg draw"; value: Number(sleep.avgDrawW || 0) > 0 ? Number(sleep.avgDrawW).toFixed(2) + " W" : "—" }
-              Stat { label: "Last sleep"; value: Model.fmtSleepDuration(sleep.last ? sleep.last.durationSec : 0) }
-              Stat { label: "Last time"; value: sleep.last ? Model.fmtAgo(sleep.last.endIso) : "—" }
-              Stat { label: "Last drop"; value: sleep.last ? (Number(sleep.last.capDrop || 0).toFixed(1) + "% / " + Number(sleep.last.whDrop || 0).toFixed(2) + " Wh") : "—" }
-              Stat { label: "Last draw"; value: sleep.last ? (Number(sleep.last.drawW || 0).toFixed(2) + " W") : "—" }
+              Stat { label: tr("sleep.count"); value: root.num(sleep.samples || 0) }
+              Stat { label: tr("sleep.avgDraw"); value: Number(sleep.avgDrawW || 0) > 0 ? root.num(sleep.avgDrawW, 2) + " W" : "—" }
+              Stat { label: tr("sleep.lastSleep"); value: Model.fmtSleepDuration(sleep.last ? sleep.last.durationSec : 0) }
+              Stat { label: tr("sleep.lastTime"); value: sleep.last ? Model.fmtAgo(sleep.last.endIso, root.trn, root.num) : "—" }
+              Stat { label: tr("sleep.lastDrop"); value: sleep.last ? (root.num(sleep.last.capDrop || 0, 1) + "% / " + root.num(sleep.last.whDrop || 0, 2) + " Wh") : "—" }
+              Stat { label: tr("sleep.lastDraw"); value: sleep.last ? root.num(sleep.last.drawW || 0, 2) + " W" : "—" }
             }
 
             Item {
@@ -616,7 +633,8 @@ Panel {
               Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: "LAST 10 SLEEPS"
+                textFormat: Text.PlainText
+                text: tr("sleep.recentTitle")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -625,7 +643,8 @@ Panel {
               Text {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: "battery % drop"
+                textFormat: Text.PlainText
+                text: tr("sleep.unit")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -676,7 +695,7 @@ Panel {
                       anchors.bottom: idxLabel.top
                       anchors.bottomMargin: Style.space(2)
                       anchors.horizontalCenter: parent.horizontalCenter
-                      text: (Number(modelData.capDrop) || 0).toFixed(1) + "%"
+                      text: root.num(modelData.capDrop || 0, 1) + "%"
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption - 1
@@ -687,7 +706,7 @@ Panel {
                       textFormat: Text.PlainText
                       anchors.bottom: parent.bottom
                       anchors.horizontalCenter: parent.horizontalCenter
-                      text: String(index + 1)
+                      text: root.num(index + 1)
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption - 1
@@ -699,7 +718,7 @@ Panel {
 
             Button {
               visible: Number(sleep.samples || 0) > 0
-              text: "Clear sleep stats"
+              text: tr("sleep.clear")
               bordered: true
               focusable: true
               foreground: root.fg
@@ -708,34 +727,21 @@ Panel {
             }
           }
 
-          Column {
+          Text {
             width: parent.width
-            spacing: Style.space(8)
-            visible: !(sleep.installed === true && Number(sleep.samples || 0) > 0)
-
-            Text {
-              width: parent.width
-              text: sleep.installed ? "Sleep tracking installed. Stats appear after the next suspend/resume." : "Sleep tracking is not installed yet."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
-
-            Button {
-              visible: !sleep.installed
-              text: "Install sleep tracking hook"
-              bordered: true
-              focusable: true
-              foreground: root.fg
-              fontFamily: root.fontFamily
-              onClicked: root.installSleepHook()
-            }
+            visible: Number(sleep.samples || 0) === 0
+            textFormat: Text.PlainText
+            text: tr("sleep.noStats") + " " + tr("sleep.activeHint")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
           }
 
           Text {
             width: parent.width
-            text: "R refresh · Esc close · Right click icon toggles percentage"
+            textFormat: Text.PlainText
+            text: tr("footer.hint")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -757,6 +763,7 @@ Panel {
       id: l
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
       text: stat.label
       color: root.dim
       font.family: root.fontFamily
@@ -801,7 +808,7 @@ Panel {
     id: pbtn
     property string mode: "normal"
     Layout.fillWidth: true
-    text: pbtn.label
+    text: Model.plain(pbtn.label, 40)
     property string label: ""
     bordered: true
     focusable: true

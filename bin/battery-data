@@ -87,17 +87,16 @@ helper_installed=false
 profile_helper_installed && helper_installed=true
 profiles_json='["econom","normal","power","auto"]'
 
-sleep_summary='{"installed":false,"samples":0,"recent":[]}'
-hook_installed=false
-[ -x /usr/lib/systemd/system-sleep/tyzie-battery-sleep ] && hook_installed=true
+sleep_summary='{"installed":true,"mode":"user","samples":0,"recent":[]}'
 if [ -r "$SLEEP_LOG" ]; then
-  sleep_summary=$(tail -n 200 "$SLEEP_LOG" | jq -Rsc --argjson installed "$([ "$hook_installed" = true ] && echo true || echo false)" '
+  sleep_summary=$(tail -n 200 "$SLEEP_LOG" | jq -Rsc '
     split("\n") | map(select(length>0) | (fromjson? // empty)) as $all |
     ($all | length) as $samples |
     ($all | last?) as $last |
     ($all | .[-10:] ) as $recent |
     {
-      installed: $installed,
+      installed: true,
+      mode: "user",
       samples: $samples,
       last: $last,
       avgDrawW: (if ($recent|length)>0 then (($recent|map(.drawW // 0)|add) / ($recent|length)) else 0 end),
@@ -111,7 +110,7 @@ if [ -r "$SLEEP_LOG" ]; then
       }))
     }')
 else
-  sleep_summary=$(jq -cn --argjson installed "$([ "$hook_installed" = true ] && echo true || echo false)" '{installed:$installed,samples:0,avgDrawW:0,totalSleepSec:0,recent:[]}')
+  sleep_summary=$(jq -cn '{installed:true,mode:"user",samples:0,avgDrawW:0,totalSleepSec:0,recent:[]}')
 fi
 
 charge_json_active='false'

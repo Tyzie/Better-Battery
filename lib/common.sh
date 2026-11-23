@@ -2,7 +2,7 @@
 set -euo pipefail
 export LC_ALL=C
 
-PLUGIN_ID="tyzie.battery"
+PLUGIN_ID="tyzie.better-battery-fixed"
 
 resolve_user() {
   local u
@@ -37,8 +37,8 @@ PENDING_CHARGE="$STATE_DIR/pending-charge.json"
 CHARGE_STATE="$STATE_DIR/charge-state"
 AUTO_MODE_FILE="$STATE_DIR/auto-mode"
 PROFILE_MODE_FILE="$STATE_DIR/profile-mode"
-PROFILE_HELPER="/usr/local/libexec/tyzie-battery-profile"
-PROFILE_SUDOERS="/etc/sudoers.d/tyzie-battery-profile"
+PROFILE_HELPER="/usr/local/libexec/tyzie-better-battery-fixed-profile"
+PROFILE_SUDOERS="/etc/sudoers.d/tyzie-better-battery-fixed"
 PROFILE_HELPER_MARKER="$STATE_DIR/profile-helper-installed"
 
 mkdir -p "$STATE_DIR" "$CONFIG_DIR" 2>/dev/null || true

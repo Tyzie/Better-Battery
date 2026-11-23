@@ -31,58 +31,38 @@ apply_profile() {
   apply_profile_target "$effective" || true
 }
 
-install_sleep_hook() {
-  local src="$DIR/bin/battery-sleep-hook"
-  local dst="/usr/lib/systemd/system-sleep/tyzie-battery-sleep"
-  local tmp
-  tmp=$(mktemp)
-  cat >"$tmp" <<SH
-#!/usr/bin/env bash
-exec "$DIR/bin/battery-sleep-hook" "\$@"
-SH
-  chmod +x "$tmp"
-  if have pkexec; then
-    pkexec bash -c "install -Dm755 '$tmp' '$dst'"
-  elif sudo -n true 2>/dev/null; then
-    sudo install -Dm755 "$tmp" "$dst"
-  else
-    omarchy-launch-floating-terminal-with-presentation bash -lc "sudo install -Dm755 '$tmp' '$dst'; echo; echo Installed sleep hook. Press Enter to close.; read"
-  fi
-  rm -f "$tmp"
-}
-
 install_profile_helper() {
-  local tmpdir helper sudoers installer
+  local tmpdir helper sudoers body quoted_body quoted_helper quoted_sudoers
   tmpdir=$(mktemp -d)
   helper="$tmpdir/helper"
   sudoers="$tmpdir/sudoers"
-  installer="$tmpdir/install.sh"
   cp "$DIR/bin/battery-profile-helper" "$helper"
   cat >"$sudoers" <<EOF
-# tyzie.battery custom CPU profile helper
+# tyzie.better-battery-fixed custom CPU profile helper
 $USER_NAME ALL=(root) NOPASSWD: $PROFILE_HELPER powersave 0, $PROFILE_HELPER powersave 1, $PROFILE_HELPER performance 0, $PROFILE_HELPER performance 1
 EOF
-  cat >"$installer" <<'SH'
-#!/usr/bin/env bash
+  body='
 set -euo pipefail
-install -Dm750 -o root -g root "$1" /usr/local/libexec/tyzie-battery-profile
-install -Dm440 -o root -g root "$2" /etc/sudoers.d/.tyzie-battery-profile.tmp
-if visudo -c -f /etc/sudoers.d/.tyzie-battery-profile.tmp >/dev/null 2>&1; then
-  mv -f /etc/sudoers.d/.tyzie-battery-profile.tmp /etc/sudoers.d/tyzie-battery-profile
-  chmod 440 /etc/sudoers.d/tyzie-battery-profile
+install -Dm750 -o root -g root "$1" /usr/local/libexec/tyzie-better-battery-fixed-profile
+install -Dm440 -o root -g root "$2" /etc/sudoers.d/.tyzie-better-battery-fixed.tmp
+if visudo -c -f /etc/sudoers.d/.tyzie-better-battery-fixed.tmp >/dev/null 2>&1; then
+  mv -f /etc/sudoers.d/.tyzie-better-battery-fixed.tmp /etc/sudoers.d/tyzie-better-battery-fixed
+  chmod 440 /etc/sudoers.d/tyzie-better-battery-fixed
 else
-  rm -f /etc/sudoers.d/.tyzie-battery-profile.tmp
+  rm -f /etc/sudoers.d/.tyzie-better-battery-fixed.tmp
   echo "sudoers validation failed" >&2
   exit 1
 fi
-SH
-  chmod +x "$installer"
+'
+  printf -v quoted_body '%q' "$body"
+  printf -v quoted_helper '%q' "$helper"
+  printf -v quoted_sudoers '%q' "$sudoers"
   if [ "$(id -u)" = "0" ]; then
-    bash "$installer" "$helper" "$sudoers"
+    bash -c "$body" -- "$helper" "$sudoers"
   elif have pkexec; then
-    pkexec bash "$installer" "$helper" "$sudoers"
+    pkexec bash -c "$body" -- "$helper" "$sudoers"
   else
-    omarchy-launch-floating-terminal-with-presentation bash -lc "sudo bash '$installer' '$helper' '$sudoers'; echo; echo Press Enter to close.; read"
+    omarchy-launch-floating-terminal-with-presentation bash -lc "sudo bash -c $quoted_body -- $quoted_helper $quoted_sudoers; echo; echo Press Enter to close.; read"
   fi
   touch "$PROFILE_HELPER_MARKER"
   rm -rf "$tmpdir"
@@ -90,7 +70,6 @@ SH
 
 case "$cmd" in
   profile) apply_profile ;;
-  install-sleep-hook) install_sleep_hook ;;
   install-profile-helper) install_profile_helper ;;
   clear-sleep)
     rm -f "$SLEEP_LOG" "$PENDING_SLEEP"

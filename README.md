@@ -1,8 +1,11 @@
-# Better Battery
+# tyzie.better-battery-fixed
 
 Omarchy shell bar widget for battery status, with a detailed keyboard panel.
 
-![Battery panel preview](preview.png)
+This is a security-hardened rebuild of `tyzie.better-battery`. It removes the
+privileged systemd sleep hook that executed user-writable plugin code as root.
+Sleep statistics are now collected by a user-level logind monitor that runs
+inside the shell with the desktop user's privileges only.
 
 ## Features
 
@@ -14,49 +17,60 @@ Omarchy shell bar widget for battery status, with a detailed keyboard panel.
   - Power: `performance` governor, boost on.
   - Auto: AC -> Power, battery -> Econom; reapplied on AC/battery changes.
   - Requires a one-time root helper install (`install-profile-helper`) that adds a
-    narrowly scoped NOPASSWD sudoers rule for the root-owned sysfs writer.
-- Charging history: active session (elapsed, gained, rate) plus recorded sessions with
-  count, average rate, total gained, last session details, and a last-10 gain graph.
-  - Sessions are recorded on AC plug/unplug transitions by `battery-data`, and are finalized as soon as the battery reaches 100% energy (full charge) instead of continuing while still plugged in.
-  - "Clear charging history" wipes all recorded sessions.
-- Sleep statistics: count, average draw, last sleep duration/time/drop/draw.
-  - Install hook from panel; records via `/usr/lib/systemd/system-sleep/tyzie-battery-sleep`.
-  - Sleeps that stay on AC (plugged in both before suspend and after resume) are skipped,
-    so only battery-powered sleeps are recorded.
-  - "Clear sleep stats" wipes all recorded sleeps for a fresh start; tracking stays installed.
+    narrowly scoped NOPASSWD sudoers rule for a root-owned sysfs writer.
+- Charging history: active session plus recorded sessions, averages, and a last-10 graph.
+- Sleep statistics: count, average draw, last sleep duration/time/drop/draw, and a
+  last-10 graph. Collected automatically by the user-level `battery-sleep-monitor`;
+  no root access and no hook installation are needed. Sleeps that stay on AC are
+  skipped.
 
 ## Install
 
-```bash
-omarchy plugin add <repository-url> --enable
+Enabled through `~/.config/omarchy/shell.json`:
+
+```json
+{ "id": "tyzie.better-battery-fixed", "showPercentage": false }
 ```
 
-The widget appears in the right side of the bar by default. Move it with:
+Move it with:
 
 ```bash
-omarchy bar move tyzie.battery --section right
+omarchy bar move tyzie.better-battery-fixed --section right
 ```
 
 Right-click the bar icon to toggle the on-bar percentage, or set `showPercentage`
 in the widget settings. `pollIntervalSec` controls how often the open panel refreshes.
 
+## Security notes
+
+- No script in this plugin installs a system-sleep wrapper or any other root-run
+  file that references a path under `~/.config/omarchy/plugins/`.
+- `battery-sleep-monitor` listens to `org.freedesktop.login1.Manager.PrepareForSleep`
+  over the system bus as the desktop user and writes only to the user's own state
+  directory. A compromised desktop user account cannot gain root through it.
+- The optional CPU profile helper is copied to a root-owned location and gated by a
+  narrow sudoers rule with fixed arguments. It never executes plugin files as root.
+- All dynamic text is normalized to plain text before reaching Omarchy-owned label
+  and tooltip sinks; JSON from helper scripts is parsed into bounded, typed values.
+
 ## Requirements
 
-- `bash`, `jq`, `awk`, and a battery exposed through `/sys/class/power_supply`
-  (UPower is used as a fallback).
-- Root access is only needed if you opt into the CPU profile helper or the sleep
-  tracking hook. Both are installed from the panel and are never required for the
-  basic battery widget.
+- `bash`, `jq`, `awk`, `flock`, `gdbus`, and a battery exposed through
+  `/sys/class/power_supply` (UPower is used as a fallback).
+- Root access is only needed if you opt into the CPU profile helper. The basic
+  widget and sleep tracking need no privileges.
 
 ## Files
 
 - `Panel.qml` - bar widget + keyboard panel UI
-- `Model.js` - formatting/helpers
-- `bin/battery-data` - JSON snapshot for panel
-- `bin/battery-action` - profile actions, auto-sync, helper/hook install, clear stats
-- `bin/battery-sleep-hook` - suspend/resume logger
+- `Model.js` - parsing, validation, formatting, and plain-text helpers
+- `i18n/en.json` - English strings (other languages fall back to English)
+- `bin/battery-data` - validated JSON snapshot for the panel
+- `bin/battery-action` - profile actions, helper install, clear stats
+- `bin/battery-sleep-monitor` - user-level logind sleep tracker
 - `bin/battery-profile-helper` - root-owned sysfs writer for CPU governor and boost
 - `lib/common.sh` - shared shell helpers
+- `tests/test-model.js` - model regression tests
 
 ## License
 
